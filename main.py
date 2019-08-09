@@ -21,7 +21,7 @@ batch_size = 32
 num_classes = 10
 learning_rate = 0.001
 epoch_lr_decrease = 30
-k = 10000
+k = 10
 num_epochs = 50
 
 
@@ -57,6 +57,7 @@ cnn.cuda()
 
 # Loss and Optimizer for the update CNN parameter U
 criterion = NetworkLoss()
+# Todo: make sure only requires_grad with batchU
 optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, cnn.parameters()), lr=learning_rate, momentum=0.9,
                             weight_decay=5e-4)
 
@@ -103,20 +104,29 @@ def main():
         cnn.cuda().train()
         adjust_learning_rate(optimizer, epoch)
         # get the pca cnn feature from
+        # 50000 * 4096
         x_pca = compute_features(dataloader, cnn, len(dataset))
         clustering_loss = deepcluster.cluster(x_pca, verbose='store_true')
         # assign pseudo-labels
         train_dataset = clustering.cluster_assign(deepcluster.images_lists,
+
                                                   dataset.imgs)
+        # Todo: contains all the lablesc, first class
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
             num_workers=4,
             pin_memory=True, )
+        # Todo: add the initialization here
+        batchB = np.sign(batchU)
+        # Todo: initialize at the begining U: 50000 * 12,
+        # should be M * K
+        batchC = batchU
         for i, (images, labels) in enumerate(train_dataloader):
             # should be N
             images = Variable(images.cuda())
             # should be M * N
+            # Todo: change to M * N
             labels = Variable(labels.cuda())
 
             # initialize B, C ,U
@@ -125,15 +135,16 @@ def main():
             batchU =cnn(image_var)[1].cpu().detach().numpy()
             # Todo: replace with numpy here for now, might be better methods
             batchB = np.sign(batchU)
-            # Todo: wrong make sure what is the meaning of mean
+            # Todo: initialize at the begining U: 50000 * 12,
+            # should be M * K
             batchC =batchU
 
             # Fix B,U, update C
             faieal = 0.1
             labels_var = torch.autograd.Variable(labels.cuda(), volatile=True)
+            # Todo: change it to M * N
             batchY = labels_var.cpu().numpy()
             # should be M * K
-            # Todo: change it
             Q = batchY * np.transpose(batchB)
             # should be (M-1) * 1
             onesm = np.ones(batchY.shape[0] - 1)
@@ -165,6 +176,7 @@ def main():
             batchU = torch.from_numpy(batchU).cuda()
             batchB = torch.from_numpy(batchB).cuda()
             net_loss = criterion(batchU, batchB)
+            # Todo: batchU.require_grads if it's true, we need grad. bacthU true, batchB false
             net_loss.backward()
             optimizer.step()
 
@@ -179,7 +191,8 @@ def main():
 
 def compute_features(dataloader, model, N):
     # discard the label information in the dataloader
-    for i, (input_tensor, _) in enumerate(dataloader):
+    for i, (input_tensor, lable) in enumerate(dataloader):
+        labels = Variable(lable.cuda())
         input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
         aux = model(input_var)[0].cpu().numpy()
         if i == 0:
