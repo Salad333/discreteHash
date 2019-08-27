@@ -110,6 +110,7 @@ def main():
         x_pca, x, batchU_all = compute_features(dataloader, cnn, len(dataset))
         clustering_loss = deepcluster.cluster(x_pca, verbose='store_true')
         # assign pseudo-labels
+        # Todo: check why the labels are not correct from deep_cluster
         train_dataset = clustering.cluster_assign(deepcluster.images_lists, dataset.imgs)
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
@@ -124,6 +125,7 @@ def main():
         batchC = initializeC(train_dataset, batchU_all[batch_size:])
         # ----------------------------------------- updating part -----------------------------------------------------#
         for i, (images, labels) in enumerate(train_dataloader):
+            # Todo: shuffe the tainloader
             # should be M * N
             labels = Variable(labels.cuda())
             # --------------------------------------------  Fix B,U, updating C ---------------------------------------#
@@ -153,16 +155,18 @@ def main():
             # --------------------------------------------  Fix C,U, updating B ---------------------------------------#
             # Fix C,U update B
             muule = 0.1
+            # Todo: change the batchU_copyv!! or detach
             batchB = np.sign(np.transpose(muule * np.dot(np.transpose(batchC), batchY)) + batchU)
 
             # --------------------------------------------  updating U ------------------------------------------------#
+            # Todo: check what;s this
             optimizer.zero_grad()
             # change back to pytorch
             batchU = torch.from_numpy(batchU).cuda()
-            # Todo: make sure here, the second round batchU is tensor and with grad, then how to calculate batchB ?
+            # Todo: make sure here, the second round batchU is tensor and with grad, then how to calculate batchB ? batchU dont change to numpy
             batchU = torch.tensor(batchU, requires_grad=True)
             batchB = torch.from_numpy(batchB).cuda()
-            batchB = torch.tensor(batchB, requires_grad = False)
+            batchB = torch.tensor(batchB, requires_grad=False)
             net_loss = criterion(batchU.float(), batchB.float())
             net_loss.backward()
             optimizer.step()
@@ -198,7 +202,7 @@ def compute_features(dataloader, model, N):
 
 
 def initializeC(train_dataset, batchU_all):
-    # Todo: make sure that this is correct regarding the label re-assignment part
+    # Todo: from the trainloader, randomly select x pics in one class, and calculate the batchU_all, and realted batchC
     classes = []
     count = 0
     for j in range(10):
@@ -206,7 +210,6 @@ def initializeC(train_dataset, batchU_all):
             if train_dataset.imgs[i][1] == j:
                 count += 1
         classes.append(np.mean(batchU_all[:count], axis=0))
-
     return np.asarray(classes)
 
 
