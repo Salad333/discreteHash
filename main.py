@@ -107,7 +107,7 @@ def main():
         # ------------------------------ clustering part to get the pseudo labels--------------------------------------#
         # get the pca cnn feature from
         # 50000 * 4096
-        x_pca, x, batchU_all = compute_features(dataloader, cnn, len(dataset))
+        x_pca, x = compute_features(dataloader, cnn, len(dataset))
         clustering_loss = deepcluster.cluster(x_pca, verbose='store_true')
         # assign pseudo-labels
         # Todo: check why the labels are not correct from deep_cluster
@@ -116,16 +116,18 @@ def main():
             train_dataset,
             batch_size=batch_size,
             num_workers=4,
+            shuffle=True,
             pin_memory=True, )
         # ------------------------------Initialize the batchU, batchB, batchC -----------------------------------------#
         # N * K
         batchU = x
-        batchB = np.sign(batchU)
+        # bactchU should always cosidered as tensor in order update it in the pytorch automated gradient graph
+        batchU_detach = batchU.detach()
+        batchB = np.sign(batchU_detach)
         # should be M * K
-        batchC = initializeC(train_dataset, batchU_all[batch_size:])
+        batchC = initializeC(train_dataloader, cnn, len(train_dataset))
         # ----------------------------------------- updating part -----------------------------------------------------#
         for i, (images, labels) in enumerate(train_dataloader):
-            # Todo: shuffe the tainloader
             # should be M * N
             labels = Variable(labels.cuda())
             # --------------------------------------------  Fix B,U, updating C ---------------------------------------#
@@ -155,18 +157,10 @@ def main():
             # --------------------------------------------  Fix C,U, updating B ---------------------------------------#
             # Fix C,U update B
             muule = 0.1
-            # Todo: change the batchU_copyv!! or detach
-            batchB = np.sign(np.transpose(muule * np.dot(np.transpose(batchC), batchY)) + batchU)
+            batchB = np.sign(np.transpose(muule * np.dot(np.transpose(batchC), batchY)) + batchU_detach)
 
             # --------------------------------------------  updating U ------------------------------------------------#
-            # Todo: check what;s this
             optimizer.zero_grad()
-            # change back to pytorch
-            batchU = torch.from_numpy(batchU).cuda()
-            # Todo: make sure here, the second round batchU is tensor and with grad, then how to calculate batchB ? batchU dont change to numpy
-            batchU = torch.tensor(batchU, requires_grad=True)
-            batchB = torch.from_numpy(batchB).cuda()
-            batchB = torch.tensor(batchB, requires_grad=False)
             net_loss = criterion(batchU.float(), batchB.float())
             net_loss.backward()
             optimizer.step()
@@ -181,15 +175,12 @@ def main():
 
 def compute_features(dataloader, model, N):
     # discard the label information in the dataloader
-    features_u = 0
+    x = 0
     features = 0
-    batchU_all = np.zeros((batch_size, encode_length))
     for i, (input_tensor, _) in enumerate(dataloader):
         input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
         x_pca, x = model(input_var)
         aux = x_pca.cpu().numpy()
-        features_u = x.detach().cpu().numpy()
-        batchU_all = np.concatenate((batchU_all, features_u), axis=0)
         if i == 0:
             features = np.zeros((N, aux.shape[1])).astype('float32')
 
@@ -198,18 +189,21 @@ def compute_features(dataloader, model, N):
         else:
             # special treatment for final batch
             features[i * batch_size:] = aux.astype('float32')
-    return features, features_u, batchU_all
+    return features, x
 
 
-def initializeC(train_dataset, batchU_all):
-    # Todo: from the trainloader, randomly select x pics in one class, and calculate the batchU_all, and realted batchC
+def initializeC(train_loader, model):
+    # Todo: change the images from 100 to 500/1000
     classes = []
     count = 0
+    x = 0
     for j in range(10):
-        for i in range(len(batchU_all)):
-            if train_dataset.imgs[i][1] == j:
+        for i, (input_tensor, label) in enumerate(train_loader):
+            if train_loader.imgs[i][1] == j & train_loader.imgs.size< 100:
+                input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
+                _, x = model(input_var)
                 count += 1
-        classes.append(np.mean(batchU_all[:count], axis=0))
+        classes.append(np.mean(x[:count], axis=0))
     return np.asarray(classes)
 
 
