@@ -13,7 +13,7 @@ import torchvision
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.autograd import Variable
-
+from cal_map import calculate_top_map, compress
 import clustering
 
 encode_length = 12
@@ -69,15 +69,16 @@ def adjust_learning_rate(opt, epoch):
     for param_group in opt.param_groups:
         param_group['lr'] = lr
 
-
-def main():
-    # fix random seeds
-    global train_dataloader, train_dataset
-    torch.manual_seed(31)
     torch.cuda.manual_seed_all(31)
     np.random.seed(31)
 
     # creating checkpoint repo
+
+
+def main():
+    # fix random seeds
+    global train_dataloader, train_dataset, tra
+    torch.manual_seed(31)
     exp_check = os.path.join('/home/hongyuyang/data/march/test/exp', 'checkpoints')
     if not os.path.isdir(exp_check):
         os.makedirs(exp_check)
@@ -118,6 +119,13 @@ def main():
             num_workers=4,
             shuffle=True,
             pin_memory=True, )
+
+        train_dataloader_for_batchC = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=1,
+            num_workers=4,
+            shuffle=True,
+            pin_memory=True, )
         # ------------------------------Initialize the batchU, batchB, batchC -----------------------------------------#
         # N * K
         batchU = x
@@ -125,7 +133,7 @@ def main():
         batchU_detach = batchU.detach()
         batchB = np.sign(batchU_detach)
         # should be M * K
-        batchC = initializeC(train_dataloader, cnn, len(train_dataset))
+        batchC = initializeC(train_dataloader_for_batchC, cnn)
         # ----------------------------------------- updating part -----------------------------------------------------#
         for i, (images, labels) in enumerate(train_dataloader):
             # should be M * N
@@ -157,20 +165,25 @@ def main():
             # --------------------------------------------  Fix C,U, updating B ---------------------------------------#
             # Fix C,U update B
             muule = 0.1
-            batchB = np.sign(np.transpose(muule * np.dot(np.transpose(batchC), batchY)) + batchU_detach)
+            batchB = np.sign(np.transpose(muule * np.dot(np.transpose(batchC), batchY)) + batchU_detach).float()
 
             # --------------------------------------------  updating U ------------------------------------------------#
             optimizer.zero_grad()
-            net_loss = criterion(batchU.float(), batchB.float())
-            net_loss.backward()
+            net_loss = criterion(batchU, batchB.cuda())
+            net_loss.backward(retain_graph=True)
             optimizer.step()
 
             if (i + 1) % (len(train_dataset) // batch_size / 2) == 0:
                 print('Epoch [%d/%d], Iter [%d/%d] Loss: %.4f '
                       % (epoch + 1, num_epochs, i + 1, len(train_dataset) // batch_size,
                          net_loss))
-    # --------------------------------------------  Save the Trained Model---------------------------------------------#
-    torch.save(cnn.state_dict(), 'cifar.pkl')
+
+        # --------------------------------------------  Save the Trained Model-----------------------------------------#
+        torch.save(cnn.state_dict(), 'cifar.pkl')
+
+        best = 0.0
+        # Test the Model
+        model_test(epoch, best)
 
 
 def compute_features(dataloader, model, N):
@@ -195,16 +208,27 @@ def compute_features(dataloader, model, N):
 def initializeC(train_loader, model):
     # Todo: change the images from 100 to 500/1000
     classes = []
-    count = 0
-    x = 0
-    for j in range(10):
-        for i, (input_tensor, label) in enumerate(train_loader):
-            if train_loader.imgs[i][1] == j & train_loader.imgs.size< 100:
-                input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
-                _, x = model(input_var)
-                count += 1
-        classes.append(np.mean(x[:count], axis=0))
+    row = 10
+    for x in range(0, row):
+        classes.append(append_features(train_loader, model, x))
     return np.asarray(classes)
+
+
+def append_features(train_loader, model, row_index):
+    count = 0
+    row_classes = []
+    x = 0
+    img_feature = []
+    for i, (input_tensor, label) in enumerate(train_loader):
+        label_numpy = label.cpu().numpy()
+        if label_numpy[0] == row_index & count < 100:
+            input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
+            _, x = model(input_var)
+            x = x.cpu().detach().numpy()
+            img_feature.append(x)
+            count += 1
+    row_classes.append(np.mean(img_feature[:count], axis=0))
+    return row_classes[0][0]
 
 
 def initializeY(labels):
@@ -212,6 +236,46 @@ def initializeY(labels):
     for i in range(batch_size):
         batchY[labels[i]] = 1
     return batchY
+
+
+def model_test(epoch, best):
+    # Dataset
+    train_dataset = datasets.CIFAR10(root='data/',
+                                     train=True,
+                                     transform=transforms.Compose(tra),
+                                     download=True)
+
+    test_dataset = datasets.CIFAR10(root='data/',
+                                    train=False,
+                                    transform=transforms.Compose(tra))
+
+    # Data Loader
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=True,
+                                               num_workers=4)
+
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
+                                              batch_size=batch_size,
+                                              shuffle=False,
+                                              num_workers=4)
+    if (epoch + 1) % 5 == 0:
+        cnn.eval()
+        retrievalB, retrievalL, queryB, queryL = compress(train_loader, test_loader, cnn)
+        # print(np.shape(retrievalB))
+        # print(np.shape(retrievalL))
+        # print(np.shape(queryB))
+        # print(np.shape(queryL))
+
+        print('---calculate top map---')
+        result = calculate_top_map(qB=queryB, rB=retrievalB, queryL=queryL, retrievalL=retrievalL, topk=1000)
+        print(result)
+
+        if result > best:
+            best = result
+            torch.save(cnn.state_dict(), 'temp.pkl')
+
+        print('best: %.6f' % (best))
 
 
 if __name__ == '__main__':
