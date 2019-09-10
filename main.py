@@ -170,6 +170,7 @@ def main():
             # --------------------------------------------  updating U ------------------------------------------------#
             optimizer.zero_grad()
             net_loss = criterion(batchU, batchB.cuda())
+            # Todo: check with Yun this is correct
             net_loss.backward(retain_graph=True)
             optimizer.step()
 
