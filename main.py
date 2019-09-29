@@ -15,6 +15,7 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 from cal_map import calculate_top_map, compress
 import clustering
+from util import UnifLabelSampler
 
 encode_length = 12
 # Todo: change to 32 for the real exps
@@ -24,6 +25,7 @@ learning_rate = 0.001
 epoch_lr_decrease = 30
 k = 10
 num_epochs = 50
+reassign = 1
 
 
 class CNN(nn.Module):
@@ -31,8 +33,6 @@ class CNN(nn.Module):
         super(CNN, self).__init__()
         self.vgg = torchvision.models.vgg16(pretrained=True)
         self.vgg.classifier = nn.Sequential(*list(self.vgg.classifier.children())[:6])
-        for param in self.vgg.parameters():
-            param.requires_grad = False
         self.fc_encode = nn.Linear(4096, encoded_length)
 
     def forward(self, x):
@@ -54,7 +54,7 @@ class NetworkLoss(nn.Module):
 
 
 cnn = CNN(encoded_length=encode_length)
-cnn.cuda()
+
 # cnn.load_state_dict(torch.load('temp.pkl'))
 
 
@@ -64,13 +64,11 @@ optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, cnn.parameters()),
                             weight_decay=5e-4)
 
 
-def adjust_learning_rate(opt, epoch):
+def adjust_learning_rate(optimizer, epoch):
     lr = learning_rate * (0.1 ** (epoch // epoch_lr_decrease))
-    for param_group in opt.param_groups:
+    for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    torch.cuda.manual_seed_all(31)
-    np.random.seed(31)
 
     # creating checkpoint repo
 
@@ -113,11 +111,13 @@ def main():
         # assign pseudo-labels
         # Todo: check why the labels are not correct from deep_cluster
         train_dataset = clustering.cluster_assign(deepcluster.images_lists, dataset.imgs)
+        sampler = UnifLabelSampler(int(reassign * len(train_dataset)),
+                                   deepcluster.images_lists)
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
             num_workers=4,
-            shuffle=True,
+            sampler=sampler,
             pin_memory=True, )
 
         train_dataloader_for_batchC = torch.utils.data.DataLoader(
@@ -144,7 +144,7 @@ def main():
             batchY = initializeY(labels_var.cpu().numpy())
             # should be M * K
             Q = np.dot(batchY, batchB)
-            # should be (M-1) * 1
+            # should be 1 * (M-1)
             onesm = np.ones(batchY.shape[0] - 1)
 
             # Todo: change to 10 when the process finish
@@ -169,7 +169,7 @@ def main():
 
             # --------------------------------------------  updating U ------------------------------------------------#
             optimizer.zero_grad()
-            net_loss = criterion(batchU, batchB.cuda())
+            net_loss = criterion(batchB.cuda(), batchU)
             # Todo: check with Yun this is correct
             net_loss.backward(retain_graph=True)
             optimizer.step()
@@ -194,7 +194,7 @@ def compute_features(dataloader, model, N):
     for i, (input_tensor, _) in enumerate(dataloader):
         input_var = torch.autograd.Variable(input_tensor.cuda(), volatile=True)
         x_pca, x = model(input_var)
-        aux = x_pca.cpu().numpy()
+        aux = x_pca.cpu().detach().numpy()
         if i == 0:
             features = np.zeros((N, aux.shape[1])).astype('float32')
 
@@ -218,7 +218,6 @@ def initializeC(train_loader, model):
 def append_features(train_loader, model, row_index):
     count = 0
     row_classes = []
-    x = 0
     img_feature = []
     for i, (input_tensor, label) in enumerate(train_loader):
         label_numpy = label.cpu().numpy()
@@ -235,26 +234,16 @@ def append_features(train_loader, model, row_index):
 def initializeY(labels):
     batchY = np.zeros((num_classes, batch_size))
     for i in range(batch_size):
-        batchY[labels[i]] = 1
+        batchY[labels[i], i] = 1
     return batchY
 
 
 def model_test(epoch, best):
     # Dataset
-    train_dataset = datasets.CIFAR10(root='data/',
-                                     train=True,
-                                     transform=transforms.Compose(tra),
-                                     download=True)
 
     test_dataset = datasets.CIFAR10(root='data/',
                                     train=False,
                                     transform=transforms.Compose(tra))
-
-    # Data Loader
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                               batch_size=batch_size,
-                                               shuffle=True,
-                                               num_workers=4)
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                               batch_size=batch_size,
@@ -262,7 +251,7 @@ def model_test(epoch, best):
                                               num_workers=4)
     if (epoch + 1) % 5 == 0:
         cnn.eval()
-        retrievalB, retrievalL, queryB, queryL = compress(train_loader, test_loader, cnn)
+        retrievalB, retrievalL, queryB, queryL = compress(train_dataloader, test_loader, cnn)
         # print(np.shape(retrievalB))
         # print(np.shape(retrievalL))
         # print(np.shape(queryB))

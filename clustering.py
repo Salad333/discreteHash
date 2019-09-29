@@ -77,7 +77,7 @@ def preprocess_features(npdata, pca=256):
     """Preprocess an array of features.
     Args:
         npdata (np.array N * ndim): features to preprocess
-        pca (int): dim of output
+        pca (int): dim of outputk
     Returns:
         np.array of dim N * pca: data PCA-reduced, whitened and L2-normalized
     """
